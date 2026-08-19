@@ -491,10 +491,23 @@ def process_image():
 def generate_svg():
     state_token = request.form.get("state_token", "")
     state = _processed_states.get(state_token)
+
+    # Render/Gunicorn can serve the second request from a different worker,
+    # so an in-memory dictionary is not guaranteed to contain the token.
+    # The browser also sends the processed image with the SVG request, which
+    # gives us a reliable fallback.
     if not state:
-        return render_index(
-            error="Az SVG generálása nem sikerült: nincs elérhető feldolgozott kép.",
-        )
+        original = request.form.get("original", "")
+        processed = request.form.get("processed", "")
+        if processed:
+            state = {
+                "original": original,
+                "processed": processed,
+            }
+        else:
+            return render_index(
+                error="Az SVG generálása nem sikerült: nincs elérhető feldolgozott kép.",
+            )
 
     processed_img = decode_image_data(state["processed"], cv2.IMREAD_GRAYSCALE)
     if processed_img is None:
