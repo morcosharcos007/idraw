@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: idraw
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /health
