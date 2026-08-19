@@ -34,6 +34,8 @@ oninput="this.nextElementSibling.value=this.value"><output>{{denoise}}</output><
 <div class="card">
 <form method="post" action="{{url_for('generate_svg')}}">
 <input type="hidden" name="state_token" value="{{state_token}}">
+<input type="hidden" name="original" value="{{original}}">
+<input type="hidden" name="processed" value="{{processed}}">
 <button type="submit">SVG VONALPÁLYA KÉSZÍTÉSE</button>
 </form>
 </div>
