@@ -1,4 +1,4 @@
-# iDraw – kézírás-feldolgozó
+# iDraw – kép-feldolgozó
 
 Flask alkalmazás, amely fotózott kézírásból tisztított képet és SVG vonalpályát készít.
 
