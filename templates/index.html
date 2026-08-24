@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iDraw kézírás-feldolgozó</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:1200px;margin:auto;padding:25px;background:#f3f3f3;color:#111}
+.card{background:white;padding:20px;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+img{max-width:100%;max-height:650px;object-fit:contain;border:1px solid #ddd;background:#fff}
+button{padding:12px 25px;font-weight:bold;cursor:pointer}
+label{margin-right:25px}
+input[type=range]{width:220px;vertical-align:middle}
+.help{color:#555;font-size:.94rem;line-height:1.45}
+.stats{display:inline-block;margin-top:12px;padding:8px 12px;background:#f1f7f2;border-radius:7px;color:#176b2c;font-size:.9rem}
+.preview{background:#fff;border:1px solid #ddd;display:block;width:100%;max-width:650px;height:auto}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>iDraw kézírás-feldolgozó</h1>
+<p>Fotózott kézírás → tisztított, folyamatos, plotterbarát SVG vonalpálya.</p>
+
+<div class="card">
+<form method="post" action="{{url_for('process_image')}}" enctype="multipart/form-data">
+<input type="file" name="image" accept="image/*" required><br><br>
+
+<label>Küszöb:
+<input type="range" name="threshold" min="80" max="240" value="{{threshold}}"
+oninput="this.nextElementSibling.value=this.value"><output>{{threshold}}</output>
+</label>
+
+<label>Zaj:
+<input type="range" name="denoise" min="1" max="9" step="2" value="{{denoise}}"
+oninput="this.nextElementSibling.value=this.value"><output>{{denoise}}</output>
+</label>
+
+<br><br>
+<button type="submit" name="action" value="process">FELDOLGOZÁS</button>
+</form>
+
+<p class="help">
+A feldolgozás megtisztítja a fotót, eltávolítja a rövid zajágakat, középvonalat képez
+a tollvonásokból, majd egyenletesen újramintavételezi és kisimítja a pályát.
+</p>
+
+{% if error %}
+<p role="alert" style="color:#b00020;font-weight:bold">{{error}}</p>
+{% endif %}
+
+{% if status %}
+<p role="status" style="color:#176b2c;font-weight:bold">{{status}}</p>
+{% endif %}
+</div>
+
+{% if processed %}
+<div class="card">
+<form method="post" action="{{url_for('generate_svg')}}">
+    <input type="hidden" name="state_token" value="{{state_token}}">
+
+    <label>Vonalminőség:
+    <input type="range" name="quality" min="1" max="5" step="1" value="3"
+    oninput="this.nextElementSibling.value=this.value">
+    <output>3</output>
+    </label>
+
+    <button type="submit">SVG VONALPÁLYA KÉSZÍTÉSE</button>
+    <p class="help">
+      1 = finomabb, több részlet &nbsp; · &nbsp;
+      3 = ajánlott &nbsp; · &nbsp;
+      5 = erősebb kisimítás, kevesebb apró kanyar.
+    </p>
+</form>
+</div>
+{% endif %}
+
+{% if original %}
+<div class="grid">
+
+<div class="card">
+<h2>Eredeti</h2>
+<img src="{{original}}" alt="Eredeti kép">
+</div>
+
+<div class="card">
+<h2>Feldolgozott</h2>
+<img src="{{processed}}" alt="Feldolgozott kép">
+</div>
+
+{% if svg_preview %}
+<div class="card">
+<h2>SVG / Vonalpálya előnézet</h2>
+<img class="preview" src="{{svg_preview}}" alt="SVG vonalpálya előnézet">
+{% if svg_stats %}
+<div class="stats">
+{{svg_stats.paths}} folyamatos stroke · {{svg_stats.points}} simított pont ·
+minőség {{svg_stats.quality}}/5
+</div>
+{% endif %}
+<br><br>
+<a href="{{svg_download}}" download="idraw-vonalpalya.svg">
+<button type="button">SVG LETÖLTÉSE</button>
+</a>
+</div>
+{% endif %}
+
+</div>
+{% endif %}
+
+</body>
+</html>
