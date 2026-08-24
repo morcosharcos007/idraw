@@ -1,5 +1,7 @@
 import os
 import secrets
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from flask import Flask, Response, abort, render_template, request, url_for
 import cv2, numpy as np, base64
@@ -10,11 +12,29 @@ app = Flask(
     template_folder=os.path.join(os.path.dirname(__file__), "templates"),
 )
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB upload limit
+
 _processed_states = {}
+
+# SVG files are stored on disk instead of only in worker memory.
+# This makes SVG generation/download reliable when Gunicorn handles
+# the generation and download requests in different workers.
+GENERATED_DIR = Path(
+    os.environ.get(
+        "IDRAW_GENERATED_DIR",
+        Path(os.environ.get("TMPDIR", "/tmp")) / "idraw-generated",
+    )
+)
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def encode(img):
     ok, data = cv2.imencode(".png", img)
-    return "data:image/png;base64," + base64.b64encode(data.tobytes()).decode() if ok else None
+    return (
+        "data:image/png;base64," + base64.b64encode(data.tobytes()).decode()
+        if ok
+        else None
+    )
+
 
 def decode_image_data(data_url, flags):
     """Decode an image data URL carried between the process and SVG submits."""
@@ -26,6 +46,7 @@ def decode_image_data(data_url, flags):
         return cv2.imdecode(np.frombuffer(raw, np.uint8), flags)
     except (ValueError, TypeError):
         return None
+
 
 def remember_processed_state(original, processed):
     """Keep the processed image server-side until the SVG action is submitted."""
@@ -39,20 +60,20 @@ def remember_processed_state(original, processed):
         del _processed_states[next(iter(_processed_states))]
     return token
 
+
 def process(img, threshold, denoise):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     k = int(denoise)
-    if k < 1: k = 1
-    if k % 2 == 0: k += 1
+    if k < 1:
+        k = 1
+    if k % 2 == 0:
+        k += 1
     if k > 1:
         gray = cv2.GaussianBlur(gray, (k, k), 0)
 
     height, width = gray.shape
     smallest_side = min(height, width)
 
-    # Measure ink against the nearby paper instead of using one global
-    # grayscale cutoff. This keeps faint strokes on a shaded photograph while
-    # rejecting low-contrast paper texture.
     block_size = max(15, int(round(smallest_side / 35)))
     block_size = min(block_size | 1, 81)
     adaptive_c = int(np.interp(int(threshold), [80, 240], [14, 3]))
@@ -69,13 +90,10 @@ def process(img, threshold, denoise):
     )
     local_darkness = paper.astype(np.int16) - gray.astype(np.int16)
     darkness_cutoff = int(np.interp(int(threshold), [80, 240], [24, 7]))
-    contrast_ink = np.where(local_darkness >= darkness_cutoff, 255, 0).astype(
-        np.uint8
-    )
+    contrast_ink = np.where(
+        local_darkness >= darkness_cutoff, 255, 0
+    ).astype(np.uint8)
 
-    # Blue/gray pen can be visually light after conversion to grayscale.
-    # Rescue blue chroma only when it also has local contrast, so colored
-    # paper texture is not promoted to handwriting.
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     hue, saturation, value = cv2.split(hsv)
     blue_pen = (
@@ -88,21 +106,20 @@ def process(img, threshold, denoise):
     )
     ink = np.where((contrast_ink > 0) | blue_pen, 255, 0).astype(np.uint8)
 
-    # Only use a very small kernel: it removes isolated paper specks while
-    # avoiding the thick, filled shapes produced by larger closing kernels.
     speck_kernel = np.ones((2, 2), np.uint8)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, speck_kernel, iterations=1)
 
-    # Find the main handwriting components first. Small marks such as the dot
-    # on an "i" are kept later when they sit close to one of these components,
-    # while isolated paper dots are discarded.
     component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
         ink, connectivity=8
     )
     image_scale = (height * width) / 1_000_000
-    min_component_area = max(4, int(round(image_scale * (2 + int(denoise)))))
+    min_component_area = max(
+        4, int(round(image_scale * (2 + int(denoise)))
+    )
+    )
     main_component_area = max(
-        min_component_area * 3, int(round(image_scale * (8 + int(denoise))))
+        min_component_area * 3,
+        int(round(image_scale * (8 + int(denoise)))),
     )
     main_ink = np.zeros_like(ink)
 
@@ -114,15 +131,12 @@ def process(img, threshold, denoise):
             or x + component_width >= width
             or y + component_height >= height
         )
-        if (
-            not touches_boundary
-            and area >= main_component_area
-        ):
+        if not touches_boundary and area >= main_component_area:
             main_ink[labels == component_id] = 255
 
-    # Components within this small gap are likely detached handwriting marks;
-    # anything farther away is treated as isolated paper texture.
-    connection_radius = max(4, min(18, int(round(smallest_side / 100))))
+    connection_radius = max(
+        4, min(18, int(round(smallest_side / 100)))
+    )
     connection_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
         (connection_radius * 2 + 1, connection_radius * 2 + 1),
@@ -149,18 +163,11 @@ def process(img, threshold, denoise):
 
         cleaned_ink[labels == component_id] = 255
 
-    # The component mask is white ink on black; invert it for the existing
-    # preview format of black handwriting on a white page.
     return cv2.bitwise_not(cleaned_ink)
 
-def _skeleton_paths(skeleton):
-    """Trace and stitch skeleton branches into ordered pen-stroke paths.
 
-    Skeletons naturally contain many degree-3/4 pixels at crossings and
-    corners.  Treating every branch as an SVG path makes a single handwritten
-    stroke look like a collection of short disconnected marks, so the branch
-    graph is stitched back together using endpoint direction and distance.
-    """
+def _skeleton_paths(skeleton):
+    """Trace and stitch skeleton branches into ordered pen-stroke paths."""
     points = [tuple(point) for point in np.argwhere(skeleton)]
     point_set = set(points)
     neighbors = {}
@@ -211,8 +218,6 @@ def _skeleton_paths(skeleton):
             if edge_key(point, neighbor) not in visited_edges:
                 paths.append(trace(point, neighbor))
 
-    # A closed handwriting loop has no endpoint or junction. Walk any edges
-    # that were not consumed above so loops remain separate SVG paths.
     for point in points:
         for neighbor in neighbors[point]:
             if edge_key(point, neighbor) not in visited_edges:
@@ -225,8 +230,6 @@ def _skeleton_paths(skeleton):
         return paths
 
     height, width = skeleton.shape
-    # This is deliberately small: it bridges rasterisation gaps, but does not
-    # join separate letters or the dot of an i to a distant stroke.
     gap_limit = max(2.0, min(8.0, min(height, width) / 180.0))
 
     def endpoint_info(path, endpoint):
@@ -251,16 +254,12 @@ def _skeleton_paths(skeleton):
             - np.asarray(second[0], dtype=np.float32)
         ) < 1.5:
             return first + second[1:]
-        # The SVG line between the two endpoints is the intended pen-down
-        # bridge. An explicit midpoint gives simplification a stable sample.
+
         a = np.asarray(first[-1], dtype=np.float32)
         b = np.asarray(second[0], dtype=np.float32)
         midpoint = tuple(((a + b) / 2.0).tolist())
         return first + [midpoint] + second
 
-    # Repeatedly take the best continuation.  The direction test prefers
-    # nearly straight continuation through junction pixels and rejects most
-    # accidental perpendicular joins.
     while True:
         best = None
         for first_index, first in enumerate(paths):
@@ -278,16 +277,23 @@ def _skeleton_paths(skeleton):
                         second_point, second_direction = endpoint_info(
                             second, second_endpoint
                         )
-                        distance = float(np.linalg.norm(first_point - second_point))
+                        distance = float(
+                            np.linalg.norm(first_point - second_point)
+                        )
                         if distance > gap_limit:
                             continue
-                        alignment = float(np.dot(first_direction, second_direction))
-                        # At a shared junction use a little more tolerance for
-                        # naturally curved writing; across a gap be stricter.
-                        alignment_limit = 0.55 if distance <= 1.5 else 0.05
+                        alignment = float(
+                            np.dot(first_direction, second_direction)
+                        )
+                        alignment_limit = (
+                            0.55 if distance <= 1.5 else 0.05
+                        )
                         if alignment > alignment_limit:
                             continue
-                        score = (1.0 + alignment) * 2.0 + distance / gap_limit
+                        score = (
+                            (1.0 + alignment) * 2.0
+                            + distance / gap_limit
+                        )
                         if best is None or score < best[0]:
                             best = (
                                 score,
@@ -299,6 +305,7 @@ def _skeleton_paths(skeleton):
 
         if best is None:
             break
+
         _, first_index, first_endpoint, second_index, second_endpoint = best
         joined = join(
             paths[first_index],
@@ -309,17 +316,18 @@ def _skeleton_paths(skeleton):
         paths[first_index] = joined
         del paths[second_index]
 
-    # Greedy nearest-end ordering reduces pen-up travel without changing the
-    # geometry or merging separate strokes.
     ordered = []
     remaining = [list(path) for path in paths if len(path) > 1]
     if remaining:
         remaining.sort(key=lambda path: (path[0][1], path[0][0]))
         current = remaining.pop(0)
         ordered.append(current)
+
         while remaining:
-            tail = np.asarray(ordered[-1][-1], dtype=np.float32)
-            nearest_index, reverse = min(
+            tail = np.asarray(
+                ordered[-1][-1], dtype=np.float32
+            )
+            nearest_index, _ = min(
                 (
                     (
                         index,
@@ -336,6 +344,7 @@ def _skeleton_paths(skeleton):
                 ),
                 key=lambda item: item[1],
             )
+
             nearest_path = remaining.pop(nearest_index)
             start_distance = np.linalg.norm(
                 tail - np.asarray(nearest_path[0], dtype=np.float32)
@@ -348,6 +357,7 @@ def _skeleton_paths(skeleton):
             ordered.append(nearest_path)
 
     return ordered
+
 
 def handwriting_to_svg(processed):
     """Convert the black-on-white preview into open centerline SVG paths."""
@@ -375,7 +385,9 @@ def handwriting_to_svg(processed):
                 f"L{points[1][0]:.2f},{points[1][1]:.2f}"
             )
 
-        commands = [f"M{points[0][0]:.2f},{points[0][1]:.2f}"]
+        commands = [
+            f"M{points[0][0]:.2f},{points[0][1]:.2f}"
+        ]
         for index in range(len(points) - 1):
             previous = points[max(0, index - 1)]
             current = points[index]
@@ -397,12 +409,16 @@ def handwriting_to_svg(processed):
         if path_length(raw_path) < minimum_length:
             continue
 
-        points = np.asarray(raw_path, dtype=np.float32).reshape(-1, 1, 2)
+        points = np.asarray(
+            raw_path, dtype=np.float32
+        ).reshape(-1, 1, 2)
         simplified = cv2.approxPolyDP(
             points, simplify_epsilon, closed=False
         ).reshape(-1, 2)
+
         if len(simplified) < 2:
             continue
+
         coordinates = svg_path_data(simplified)
         svg_paths.append(
             f'<path d="{coordinates}" fill="none" stroke="black" '
@@ -419,6 +435,62 @@ def handwriting_to_svg(processed):
         "</svg>\n"
     )
 
+
+def validate_svg(svg_text):
+    """Validate that the generated SVG is well-formed XML and drawable."""
+    if not svg_text or "<svg" not in svg_text:
+        raise ValueError("Az SVG dokumentum hiányzik.")
+
+    if "<path " not in svg_text:
+        raise ValueError("Az SVG nem tartalmaz rajzolható path elemeket.")
+
+    try:
+        root = ET.fromstring(svg_text)
+    except ET.ParseError as exc:
+        raise ValueError("A generált SVG XML formátuma hibás.") from exc
+
+    if root.tag.split("}")[-1] != "svg":
+        raise ValueError("A dokumentum gyökéreleme nem SVG.")
+
+    return True
+
+
+def _safe_svg_token(state_token):
+    if not state_token:
+        return ""
+
+    safe_token = "".join(
+        character
+        for character in state_token
+        if character.isalnum() or character in "-_"
+    )
+    return safe_token
+
+
+def save_svg_file(state_token, svg_text):
+    """Save SVG to worker-independent local storage."""
+    safe_token = _safe_svg_token(state_token)
+    if not safe_token:
+        raise ValueError("Érvénytelen SVG azonosító.")
+
+    path = GENERATED_DIR / f"{safe_token}.svg"
+    path.write_text(svg_text, encoding="utf-8")
+    return path
+
+
+def load_svg_file(state_token):
+    """Load a previously generated SVG from local storage."""
+    safe_token = _safe_svg_token(state_token)
+    if not safe_token:
+        return None
+
+    path = GENERATED_DIR / f"{safe_token}.svg"
+    if not path.is_file():
+        return None
+
+    return path.read_text(encoding="utf-8")
+
+
 def render_index(**values):
     defaults = {
         "original": None,
@@ -434,29 +506,37 @@ def render_index(**values):
     defaults.update(values)
     return render_template("index.html", **defaults)
 
+
 @app.route("/")
 def index():
     return render_index()
+
 
 @app.route("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.route("/process", methods=["POST"])
 def process_image():
     app.logger.info("/process POST RECEIVED")
+
     try:
-        threshold = max(80, min(240, int(request.form.get("threshold", 160))))
+        threshold = max(
+            80, min(240, int(request.form.get("threshold", 160)))
+        )
     except (TypeError, ValueError):
         threshold = 160
+
     try:
-        denoise = max(1, min(9, int(request.form.get("denoise", 3))))
+        denoise = max(
+            1, min(9, int(request.form.get("denoise", 3)))
+        )
         if denoise % 2 == 0:
             denoise += 1
     except (TypeError, ValueError):
         denoise = 3
 
-    # Must match <input name="image"> in templates/index.html.
     f = request.files.get("image")
     if not f or not f.filename:
         return render_index(
@@ -464,9 +544,14 @@ def process_image():
             denoise=denoise,
             error="Hiba: nem érkezett fájl.",
         )
+
     app.logger.info("FILE RECEIVED: %s", f.filename)
 
-    img = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_COLOR)
+    img = cv2.imdecode(
+        np.frombuffer(f.read(), np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+
     if img is None:
         return render_index(
             threshold=threshold,
@@ -477,7 +562,16 @@ def process_image():
     original = encode(img)
     processed_img = process(img, threshold, denoise)
     processed = encode(processed_img)
+
+    if original is None or processed is None:
+        return render_index(
+            threshold=threshold,
+            denoise=denoise,
+            error="A kép kódolása nem sikerült.",
+        )
+
     state_token = remember_processed_state(original, processed)
+
     return render_index(
         original=original,
         processed=processed,
@@ -487,18 +581,19 @@ def process_image():
         status="A feldolgozás sikerült.",
     )
 
+
 @app.route("/generate-svg", methods=["POST"])
 def generate_svg():
     state_token = request.form.get("state_token", "")
     state = _processed_states.get(state_token)
 
-    # Render/Gunicorn can serve the second request from a different worker,
-    # so an in-memory dictionary is not guaranteed to contain the token.
-    # The browser also sends the processed image with the SVG request, which
-    # gives us a reliable fallback.
+    # Gunicorn may handle the second request in another worker.
+    # The browser also sends the processed image with the SVG request,
+    # so use it as a reliable fallback.
     if not state:
         original = request.form.get("original", "")
         processed = request.form.get("processed", "")
+
         if processed:
             state = {
                 "original": original,
@@ -506,50 +601,111 @@ def generate_svg():
             }
         else:
             return render_index(
-                error="Az SVG generálása nem sikerült: nincs elérhető feldolgozott kép.",
+                error=(
+                    "Az SVG generálása nem sikerült: "
+                    "nincs elérhető feldolgozott kép."
+                ),
             )
 
-    processed_img = decode_image_data(state["processed"], cv2.IMREAD_GRAYSCALE)
+    processed_img = decode_image_data(
+        state["processed"],
+        cv2.IMREAD_GRAYSCALE,
+    )
+
     if processed_img is None:
         return render_index(
             original=state["original"],
             processed=state["processed"],
             state_token=state_token,
-            error="Az SVG generálása nem sikerült: a feldolgozott kép nem olvasható.",
+            error=(
+                "Az SVG generálása nem sikerült: "
+                "a feldolgozott kép nem olvasható."
+            ),
         )
 
     try:
         svg = handwriting_to_svg(processed_img)
+
         if "<path " not in svg:
             raise ValueError("nem található rajzolható vonal")
-    except Exception:
+
+        validate_svg(svg)
+
+        if not state_token:
+            state_token = remember_processed_state(
+                state["original"],
+                state["processed"],
+            )
+
+        save_svg_file(state_token, svg)
+
+        # Keep it in memory too for backwards compatibility, but the
+        # disk file is the authoritative copy for downloading.
+        state["svg"] = svg
+
+    except Exception as exc:
+        app.logger.exception("SVG GENERATION/SAVE FAILED: %s", exc)
+
         return render_index(
             original=state["original"],
             processed=state["processed"],
             state_token=state_token,
-            error="Az SVG generálása nem sikerült. Próbáld meg újra más beállításokkal.",
+            error=f"Az SVG mentése nem sikerült: {exc}",
         )
 
-    state["svg"] = svg
-    encoded_svg = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    encoded_svg = base64.b64encode(
+        svg.encode("utf-8")
+    ).decode("ascii")
+
     return render_index(
         original=state["original"],
         processed=state["processed"],
         state_token=state_token,
         svg_preview="data:image/svg+xml;base64," + encoded_svg,
-        svg_download=url_for("download_svg", state_token=state_token),
+        svg_download=url_for(
+            "download_svg",
+            state_token=state_token,
+        ),
+        status="Az SVG sikeresen elkészült és el lett mentve.",
     )
+
 
 @app.route("/download-svg")
 def download_svg():
-    state = _processed_states.get(request.args.get("state_token", ""))
-    if not state or not state.get("svg"):
+    state_token = request.args.get("state_token", "")
+
+    # Persistent file first: this works even when another Gunicorn
+    # worker handles the download request.
+    svg = load_svg_file(state_token)
+
+    # Backwards-compatible fallback for an SVG generated in memory.
+    if svg is None:
+        state = _processed_states.get(state_token)
+        if state:
+            svg = state.get("svg")
+
+    if not svg:
         abort(404)
+
+    try:
+        validate_svg(svg)
+    except ValueError:
+        abort(404)
+
     return Response(
-        state["svg"],
+        svg,
         mimetype="image/svg+xml",
-        headers={"Content-Disposition": "attachment; filename=idraw-vonalpalya.svg"},
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=idraw-vonalpalya.svg"
+            ),
+            "Cache-Control": "no-store",
+        },
     )
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8080")),
+    )
