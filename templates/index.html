@@ -49,14 +49,15 @@ oninput="this.nextElementSibling.value=this.value"><output>{{denoise}}</output>
 
 <p class="help">
 A rendszer először a tintát választja le a háttérről, majd a kitöltött vonalból
-középvonalat képez. A vektorizálás ezután görbéket készít, nem pixelről pixelre
-rajzoló törött vonalakat.
+középvonalat képez. Ezután a skeleton gráfjából folytonos stroke-okat rekonstruál,
+majd a görbületet és a valószínű tollmozgási sorrendet is figyelembe veszi.
 </p>
 
 <div class="tip help">
 <strong>Legjobb eredmény:</strong> egyenes fotó, homogén világos háttér, erős és
-éles tinta, lehetőleg a kézírás körül kevés üres papír. A kód szándékosan
-megőrzi a vékony részleteket, mert ezek elvesztése a plottereredményt rontaná.
+éles tinta, lehetőleg a kézírás körül kevés üres papír. A rendszer nem tudja a fotóból biztosan visszanyerni az eredeti toll-telemetriát,
+ezért a stroke-sorrend geometriai valószínűsítés. A cél a lehető legvalószínűbb,
+folyamatos és plotterbarát tollmozgás rekonstruálása.
 </div>
 
 {% if error %}<p class="error" role="alert">{{error}}</p>{% endif %}
@@ -72,7 +73,7 @@ megőrzi a vékony részleteket, mert ezek elvesztése a plottereredményt ronta
 oninput="this.nextElementSibling.value=this.value"><output>{{quality}}</output>
 </label>
 <button type="submit">SVG VONALPÁLYA KÉSZÍTÉSE</button>
-<p class="help">1 = több eredeti részlet · 3 = ajánlott · 5 = erősebb kisimítás. Első tesztnél a 3-as értéket javaslom.</p>
+<p class="help">1 = egyszerűbb/gyorsabb pálya · 3 = kiegyensúlyozott · 5 = maximális részlet. A minőség most ténylegesen módosítja a mintavételezést, simítást és egyszerűsítést.</p>
 </form>
 </div>
 {% endif %}

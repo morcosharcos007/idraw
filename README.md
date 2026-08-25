@@ -31,3 +31,12 @@ python app.py
 ```
 
 A Render deployment a `PORT` környezeti változót használja.
+
+
+## Stroke reconstruction és minőségi módok
+
+A `stroke_reconstruction.py` réteg az alkalmazás meglévő centerline/skeleton gráfjára épül. A minőség 1–5 nem csak vizuális címke: egyszerre változtatja a mintavételezési sűrűséget, a simítást, a geometriai egyszerűsítést és a minimális stroke-hosszt.
+
+A statikus fotó a vonal geometriáját őrzi meg, de az eredeti toll-telemetriát (sebesség, pen-up/pen-down időpont, pontos irány) nem. Ezért a stroke-sorrend **geometriai valószínűsítés**: junction-folytonosság, olvasási irány, végpontok közötti utazási távolság és irányfolytonosság alapján próbálja rekonstruálni a legvalószínűbb tollmozgást. Ezt nem kezeljük biztos történeti sorrendként.
+
+A Render belépési pontja `wsgi:app`, amely a rekonstrukciós réteget a meglévő Flask alkalmazásba injektálja.
