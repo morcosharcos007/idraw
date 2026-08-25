@@ -3,8 +3,8 @@ import unittest
 import cv2
 import numpy as np
 
-from new_stroke import handwriting_to_svg
-from new_plotter import DEFAULT_PROFILE, analyze_svg
+from stroke_reconstruction import handwriting_to_svg
+from plotter_pipeline import DEFAULT_PROFILE, analyze_svg
 
 
 class Stage2ReconstructionTests(unittest.TestCase):
