@@ -1,42 +1,36 @@
-# iDraw – kézírás-feldolgozó
+# iDraw Ultimate
 
-Flask alkalmazás, amely fotózott kézírásból tisztított, középvonal-alapú SVG vonalpályát készít iDraw/UUNA TEK pen plotterhez.
+Fotózott kézírásból UUNA TEK/iDraw A4 pen plotterhez előkészített, centerline-alapú és geometriailag valószínűsített tollpálya.
 
-## Feldolgozási elv
+## Új pipeline
+- konzervatív tinta-kiemelés
+- skeleton / centerline
+- junction stroke-párosítás
+- raster-gap javítás
+- resampling + Savitzky–Golay simítás
+- geometriai egyszerűsítés
+- valószínű stroke-sorrend és irány
+- pen-up útvonal optimalizálás + bounded 2-opt
+- UUNA TEK A4 safe-zone ellenőrzés
+- automatikus aránytartó A4 safe-fit
+- zero-motion plot plan: távolságok, becsült idő, figyelmeztetések
+- gép-előkészített SVG + JSON plot plan
 
-1. háttér- és lokális kontraszt alapú tinta-kiemelés
-2. konzervatív zaj- és komponensszűrés
-3. skeleton / centerline képzés
-4. rövid skeleton-spur ágak eltávolítása
-5. junctionökben tangens-alapú, pontos stroke-párosítás
-6. apró raster-szakadások óvatos javítása
-7. ívhossz szerinti újramintavételezés
-8. enyhe Savitzky–Golay simítás
-9. folyamatos cubic Bézier SVG pathok
-10. XML és path-validáció letöltés előtt
+## Fontos korlát
+A lapos fotó nem tartalmazza biztosan az eredeti toll sebességét, pen-up/pen-down telemetriáját és teljes történeti stroke-sorrendjét. Ezeket a rendszer valószínűsíti, nem állítja vissza bizonyítottan.
 
-A cél nem a bitmap körberajzolása, hanem a kézírás középvonalának rekonstruálása, hogy a plotter ne kapjon fűrészfogas pixelpályát.
-
-## UUNA TEK / iDraw kompatibilitás
-
-Az alkalmazás szándékosan nyílt, `fill="none"` SVG pathokat készít, `round` linecap és linejoin beállítással. A kimenet Inkscape-ben és az iDraw/UUNA TEK SVG workflow-ban tovább szerkeszthető és méretezhető.
-
-A projektben nem keverjük a gépspecifikus UUNA TEK firmware-t vagy Inkscape extensiont az SVG-generátorral: az alkalmazás feladata a jó vektoros pálya előállítása, a plottervezérlést az UUNA TEK/iDraw szoftver végzi.
-
-## Indítás
-
+## Futtatás
 ```bash
 pip install -r requirements.txt
 python app.py
 ```
+Render belépési pont: `wsgi:app`.
 
-A Render deployment a `PORT` környezeti változót használja.
+## Teszt
+```bash
+python -m unittest discover -s tests -v
+```
 
+A fizikai UUNA TEK küldőréteg szándékosan külön marad, hogy a webes feldolgozás és a helyi USB/GRBL vezérlés ne legyen összekeverve.
 
-## Stroke reconstruction és minőségi módok
-
-A `stroke_reconstruction.py` réteg az alkalmazás meglévő centerline/skeleton gráfjára épül. A minőség 1–5 nem csak vizuális címke: egyszerre változtatja a mintavételezési sűrűséget, a simítást, a geometriai egyszerűsítést és a minimális stroke-hosszt.
-
-A statikus fotó a vonal geometriáját őrzi meg, de az eredeti toll-telemetriát (sebesség, pen-up/pen-down időpont, pontos irány) nem. Ezért a stroke-sorrend **geometriai valószínűsítés**: junction-folytonosság, olvasási irány, végpontok közötti utazási távolság és irányfolytonosság alapján próbálja rekonstruálni a legvalószínűbb tollmozgást. Ezt nem kezeljük biztos történeti sorrendként.
-
-A Render belépési pontja `wsgi:app`, amely a rekonstrukciós réteget a meglévő Flask alkalmazásba injektálja.
+A donor `WelcomePastToday/pen-plotter` MIT licencű referencia; a részleteket a `THIRD_PARTY_NOTICES.md` dokumentálja.
